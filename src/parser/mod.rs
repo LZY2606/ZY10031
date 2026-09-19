@@ -57,6 +57,9 @@ macro_rules! parse_mode {
 
 pub mod byte;
 pub mod char;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub mod checkpoint;
 pub mod choice;
 pub mod combinator;
 pub mod error;

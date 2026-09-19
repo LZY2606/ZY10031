@@ -55,6 +55,11 @@ pub mod buf_reader;
 #[cfg(feature = "alloc")]
 #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod buffered;
+/// Stream wrapper which provides bounded checkpoints: rewindable parsing over a bounded number
+/// of tokens without requiring the stream to be `Clone`.
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub mod checkpoint;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod easy;
