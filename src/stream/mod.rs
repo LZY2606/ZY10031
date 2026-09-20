@@ -55,6 +55,11 @@ pub mod buf_reader;
 #[cfg(feature = "alloc")]
 #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod buffered;
+/// Stream wrapper which provides bounded, stack ordered checkpoints for streams which cannot be
+/// cloned.
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub mod checkpoint;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod easy;

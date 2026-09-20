@@ -164,6 +164,148 @@ where
     Try(p)
 }
 
+#[cfg(feature = "alloc")]
+use crate::stream::checkpoint::CheckpointStream;
+
+/// Parser returned by [`checkpoint`].
+#[cfg(feature = "alloc")]
+#[derive(Copy, Clone)]
+pub struct Checkpoint<P>(usize, P);
+
+/// The partial state used by [`Checkpoint`]. Tracks whether the checkpoint is
+/// still active in the stream so that parsing can be resumed after more input
+/// has been supplied to a partial (for example asynchronous) stream.
+#[cfg(feature = "alloc")]
+#[derive(Clone, Debug, Default)]
+pub struct CheckpointState<S> {
+    begun: bool,
+    state: S,
+}
+
+#[cfg(feature = "alloc")]
+impl<Input, O, P> Parser<Input> for Checkpoint<P>
+where
+    Input: CheckpointStream,
+    P: Parser<Input, Output = O>,
+{
+    type Output = O;
+    type PartialState = CheckpointState<P::PartialState>;
+
+    parse_mode!(Input);
+
+    #[inline]
+    fn parse_mode_impl<M>(
+        &mut self,
+        mode: M,
+        input: &mut Input,
+        state: &mut Self::PartialState,
+    ) -> ParseResult<O, <Input as StreamOnce>::Error>
+    where
+        M: ParseMode,
+    {
+        if !state.begun {
+            input.begin_checkpoint(self.0);
+            state.begun = true;
+        }
+        match self.1.parse_committed_mode(mode, input, &mut state.state) {
+            v @ CommitOk(_) | v @ PeekOk(_) => {
+                input.commit_checkpoint();
+                state.begun = false;
+                v
+            }
+            PeekErr(err) => {
+                if input.is_partial() && err.error.is_unexpected_end_of_input() {
+                    // The parser needs more input than the partial stream
+                    // currently holds. Keep the checkpoint active so that the
+                    // parse can resume once more input arrives.
+                    return PeekErr(err);
+                }
+                state.begun = false;
+                match input.reset_checkpoint() {
+                    Ok(()) => PeekErr(err),
+                    // The token budget was exceeded so the stream could not be
+                    // reset. Commit the error at the furthest position
+                    // instead of letting another alternative parse from the
+                    // wrong position.
+                    Err(reset_err) => CommitErr(err.error.merge(reset_err)),
+                }
+            }
+            CommitErr(err) => {
+                if input.is_partial() && err.is_unexpected_end_of_input() {
+                    // As above, keep the checkpoint active while waiting for
+                    // more input.
+                    return CommitErr(err);
+                }
+                // A committed failure stays committed, exactly as if the
+                // checkpoint were not present.
+                state.begun = false;
+                input.commit_checkpoint();
+                CommitErr(err)
+            }
+        }
+    }
+
+    forward_parser!(Input, add_error add_committed_expected_error parser_count, 1);
+}
+
+/// `checkpoint(budget, p)` behaves as `p` except that if `p` fails without
+/// committing any input the stream is reset to the position it had when the
+/// parser started, as long as no more than `budget` tokens were read from the
+/// underlying stream.
+///
+/// This is a bounded version of [`attempt`] which works on streams which are
+/// not `Clone`: the stream only retains the tokens read since the checkpoint
+/// was created and releases them when the checkpoint is committed or reset.
+/// Checkpoints nest following stack order; committing an inner checkpoint
+/// does not commit an enclosing one. When parsing partial (for example
+/// asynchronous) streams the checkpoint stays active while the parser waits
+/// for more input, keeping the token budget and error positions accurate
+/// across the suspension.
+///
+/// If more than `budget` tokens were read before the reset the reset fails
+/// and the error is committed (no other alternative is attempted), preserving
+/// the error at the furthest position. A committed failure of `p` is
+/// propagated unchanged, just like without `checkpoint`.
+///
+/// The stream must implement [`CheckpointStream`], which
+/// [`stream::checkpoint::Stream`] provides for any `StreamOnce + Positioned`
+/// stream.
+///
+/// [`CheckpointStream`]: ../stream/checkpoint/trait.CheckpointStream.html
+/// [`stream::checkpoint::Stream`]: ../stream/checkpoint/struct.Stream.html
+///
+/// ```
+/// # extern crate combine;
+/// # use combine::*;
+/// # use combine::parser::byte::byte;
+/// # use combine::parser::combinator::{attempt, checkpoint};
+/// # use combine::stream::checkpoint::Stream as CheckpointedStream;
+/// # fn main() {
+/// // Try to parse `ab`, resetting to the start on failure as long as no more
+/// // than 2 tokens were read
+/// let mut parser = checkpoint(2, attempt((byte(b'a'), byte(b'b'))))
+///     .or((byte(b'a'), byte(b'c')));
+/// let result = parser.parse(CheckpointedStream::new(&b"ac"[..]));
+/// assert_eq!(result.map(|t| t.0), Ok((b'a', b'c')));
+///
+/// // Reading more tokens than the budget allows makes the reset fail and the
+/// // error is committed instead
+/// let mut parser = checkpoint(1, attempt((byte(b'a'), byte(b'b'), byte(b'c'))).map(|_| "first"))
+///     .or((byte(b'a'), byte(b'x')).map(|_| "second"));
+/// let result = parser.parse(CheckpointedStream::new(&b"axc"[..]));
+/// assert!(result.is_err());
+/// # }
+/// ```
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub fn checkpoint<Input, P>(budget: usize, p: P) -> Checkpoint<P>
+where
+    Input: CheckpointStream,
+    P: Parser<Input>,
+{
+    Checkpoint(budget, p)
+}
+
 #[derive(Copy, Clone)]
 pub struct LookAhead<P>(P);
 
